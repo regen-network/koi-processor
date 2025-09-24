@@ -243,53 +243,67 @@ function updateDailySection(data) {
 }
 
 // Update weekly digest section
-function updateWeeklySection(data) {
-    if (!data.success) return;
+async function updateWeeklySection(data) {
+    // First fetch the actual current weekly digest
+    const currentWeekly = await fetchAPI('/api/dashboard/weekly/current');
+
+    if (currentWeekly.success && currentWeekly.digest) {
+        // Use real digest data
+        const digest = currentWeekly.digest;
+
+        // Update progress bar (100% if we have a digest)
+        const progressBar = document.getElementById('weekly-progress');
+        if (progressBar) {
+            progressBar.style.width = '100%';
+            progressBar.textContent = '100%';
+        }
     
-    // Update progress bar
-    const progressBar = document.getElementById('weekly-progress');
-    if (progressBar && data.current_week) {
-        const progress = data.current_week.progress_percentage || 0;
-        progressBar.style.width = `${progress}%`;
-        progressBar.textContent = `${Math.round(progress)}%`;
-    }
-    
-    // Update content statistics
-    if (data.current_week) {
+        // Update content statistics from real digest
         const wordCount = document.getElementById('word-count');
         const sourceCount = document.getElementById('source-count');
         const contentCount = document.getElementById('content-count');
-        
+
         if (wordCount) {
-            const wc = data.current_week.digest?.metadata?.word_count || 0;
-            wordCount.textContent = `${wc} / 800-1200`;
+            // Count words in markdown
+            const wordCountNum = currentWeekly.markdown ? currentWeekly.markdown.split(/\s+/).length : 0;
+            wordCount.textContent = `${wordCountNum} / 800-1200`;
         }
         if (sourceCount) {
-            sourceCount.textContent = data.current_week.unique_sources || 0;
+            // Count unique sources from clusters
+            const sources = new Set();
+            if (digest.clusters) {
+                digest.clusters.forEach(c => {
+                    if (c.items) c.items.forEach(i => {
+                        if (i.source) sources.add(i.source.split('-')[0]);
+                    });
+                });
+            }
+            sourceCount.textContent = sources.size;
         }
         if (contentCount) {
-            contentCount.textContent = data.current_week.content_collected || 0;
+            contentCount.textContent = digest.total_items || 0;
         }
-    }
-    
-    // Update digest content preview
-    const digestContent = document.getElementById('weekly-digest-content');
-    if (digestContent && data.current_week && data.current_week.digest) {
-        const digest = data.current_week.digest;
-        const content = typeof digest.content === 'string' ? JSON.parse(digest.content) : digest.content;
-        
-        if (content.brief) {
+
+        // Update digest content preview
+        const digestContent = document.getElementById('weekly-digest-content');
+        if (digestContent) {
             let html = `
                 <div class="mb-3">
-                    <span class="badge bg-info me-2">Status: ${digest.status}</span>
-                    <span class="badge bg-secondary">Word Count: ${digest.metadata?.word_count || 0}</span>
+                    <span class="badge bg-success me-2">Status: generated</span>
+                    <span class="badge bg-secondary">Word Count: ${currentWeekly.markdown ? currentWeekly.markdown.split(/\s+/).length : 0}</span>
                 </div>
                 <div class="content-preview">
                     <h6>Weekly Brief Preview</h6>
-                    <p>${escapeHtml(content.brief.substring(0, 500))}...</p>
+                    <p>${escapeHtml(currentWeekly.markdown ? currentWeekly.markdown.substring(0, 500) : '')}...</p>
                 </div>
             `;
             digestContent.innerHTML = html;
+        }
+    } else {
+        // No digest available
+        const digestContent = document.getElementById('weekly-digest-content');
+        if (digestContent) {
+            digestContent.innerHTML = '<p class="text-muted">No weekly digest generated yet</p>';
         }
     }
 }
@@ -647,6 +661,7 @@ function renderDraftList(drafts, containerId) {
         let themes = [];
         let trending = [];
 
+        // First try to get from provenance field
         if (draft.provenance && Object.keys(draft.provenance).length > 0) {
             sourceCount = draft.provenance.source_count || 0;
             platforms = draft.provenance.platforms || [];
@@ -655,6 +670,50 @@ function renderDraftList(drafts, containerId) {
             if (draft.provenance.generation_metadata) {
                 themes = draft.provenance.generation_metadata.themes || [];
                 trending = draft.provenance.generation_metadata.trending || [];
+            }
+        }
+
+        // If no provenance, extract from citations (for weekly digests)
+        else if (draft.content && draft.content.citations) {
+            const citations = draft.content.citations;
+            sourceCount = citations.length;
+
+            // Extract unique platforms from citations
+            const platformSet = new Set();
+            const sourceSet = new Set();
+
+            citations.forEach(cite => {
+                // Extract platform from source or URL
+                if (cite.source) {
+                    const platform = cite.source.split('-')[0].replace('sensor', '').trim();
+                    if (platform) platformSet.add(platform);
+                    sourceSet.add(cite.source);
+                }
+                if (cite.url) {
+                    if (cite.url.includes('forum.regen')) platformSet.add('forum');
+                    if (cite.url.includes('github.com')) platformSet.add('github');
+                    if (cite.url.includes('discord')) platformSet.add('discord');
+                    if (cite.url.includes('telegram')) platformSet.add('telegram');
+                }
+            });
+
+            platforms = Array.from(platformSet);
+            sources = Array.from(sourceSet);
+        }
+
+        // Extract from content text (fallback)
+        else if (draft.content && draft.content.brief) {
+            // Count sources mentioned in the brief
+            const sourceMatches = draft.content.brief.match(/Source: ([^|]+)/g);
+            if (sourceMatches) {
+                sourceCount = sourceMatches.length;
+                const platformSet = new Set();
+                sourceMatches.forEach(match => {
+                    const source = match.replace('Source: ', '').trim();
+                    if (source.includes('discourse')) platformSet.add('discourse');
+                    if (source.includes('github')) platformSet.add('github');
+                });
+                platforms = Array.from(platformSet);
             }
         }
 
