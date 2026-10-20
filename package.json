@@ -1,0 +1,13 @@
+{
+  "name": "koi-processor",
+  "private": true,
+  "description": "KOI query API bridge (koi-query-api.ts), run under Bun.",
+  "scripts": {
+    "start": "bun koi-query-api.ts"
+  },
+  "dependencies": {
+    "cors": "2.8.6",
+    "express": "5.2.1",
+    "pg": "8.19.0"
+  }
+}

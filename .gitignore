@@ -1,0 +1,124 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/*.log
+logs/*.bak
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Distribution
+dist/
+build/
+*.egg-info/
+
+# Test files and temporary (except tests/ directory)
+test_*.py
+!tests/test_*.py
+!scripts/terminusdb/test_*.py
+*_test.py
+*_fixed.py
+debug_*.py
+temp_*.py
+trace_*.py
+verify_*.py
+final_*_test.py
+test_results.log
+validation_results.json
+
+# Output directories
+output/
+db-backups/
+backups/
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Node modules (for TypeScript components)
+node_modules/
+bge-mcp-ts/node_modules/
+
+# Configuration
+config/client_secret.json
+config/client_secret_*.json
+
+# Database backups and exports
+*.sql
+*.csv
+!migrations/*.sql
+
+# Working documents (not part of public codebase)
+prompts/
+docs/planning/
+
+
+# Ignore logs and exports
+logs/
+exports/
+.local-backup/
+*.log.*
+*.gz
+
+# TerminusDB phase artifacts
+scripts/terminusdb/artifacts/
+
+# Federation invite bundles
+federation-invite-*/
+# Ephemeral federation join request artifacts (generated during peering)
+scripts/federation/*-join-request.txt
+
+# MediaWiki import data artifacts (large generated files)
+data/mediawiki_*
+data/salish_sea_wiki*
+data/mediawiki_parsed/
+
+# Session re-embed working directories (chunks + results, large generated files)
+reembed_data/
+reembed_results/
+
+# Claude Code auto-generated context files (keep root CLAUDE.md only)
+**/CLAUDE.md
+!/CLAUDE.md
+
+# Soak test runtime data
+docs/soak-results/
+
+# Eval results and generated artifacts
+.deepeval/
+tests/eval/results/
+scripts/reextraction/bakeoff_cache/
+scripts/reextraction/BAKEOFF_*
+scripts/reextraction/CONTEXTUAL_*
+tmp_*.jsonl
+
+# Bun/npm dependencies
+node_modules/
