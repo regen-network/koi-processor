@@ -28,7 +28,7 @@ import sys
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import asyncpg
 from loguru import logger
@@ -41,8 +41,23 @@ DB_CONFIG = {
     "port": int(os.environ.get("KOI_DB_PORT", "5433")),
     "database": os.environ.get("KOI_DB_NAME", "eliza"),
     "user": os.environ.get("KOI_DB_USER", "postgres"),
-    "password": os.environ.get("KOI_DB_PASSWORD", "postgres"),
+    "password": os.environ.get("KOI_DB_PASSWORD"),
 }
+
+
+def _connect_kwargs() -> Dict[str, Any]:
+    """Keyword arguments for asyncpg.connect().
+
+    There is deliberately no default password: a missing KOI_DB_PASSWORD
+    stops the run instead of trying a password that is published in this repo.
+    Passing fields as keywords (not a URL) also keeps a password containing
+    '@', ':' or '/' intact.
+    """
+    if not DB_CONFIG["password"]:
+        raise SystemExit("KOI_DB_PASSWORD is not set; refusing to connect without it")
+    return dict(DB_CONFIG)
+
+
 DEFAULT_GRAPH = "regen_graph"
 
 # ---------------------------------------------------------------------------
@@ -545,8 +560,7 @@ async def main() -> None:
     run_id = args.run_id or hashlib.sha256(
         f"flows:{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
 
-    db_url = (f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}"
-              f"@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}")
+    connect_kwargs = _connect_kwargs()
 
     logger.info("=" * 60)
     logger.info("EXECUTION FLOW DETECTION")
@@ -555,7 +569,7 @@ async def main() -> None:
                 f"Top: {args.top_entries}  Max: {args.max_processes}  Dry: {args.dry_run}")
 
     try:
-        conn = await asyncpg.connect(db_url)
+        conn = await asyncpg.connect(**connect_kwargs)
     except Exception as e:
         logger.error(f"Database connection failed: {e}")
         sys.exit(1)

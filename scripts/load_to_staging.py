@@ -38,8 +38,22 @@ DB_CONFIG = {
     "port": int(os.environ.get("KOI_DB_PORT", "5433")),
     "database": os.environ.get("KOI_DB_NAME", "eliza"),
     "user": os.environ.get("KOI_DB_USER", "postgres"),
-    "password": os.environ.get("KOI_DB_PASSWORD", "postgres"),
+    "password": os.environ.get("KOI_DB_PASSWORD"),
 }
+
+
+def _connect_kwargs() -> Dict[str, Any]:
+    """Keyword arguments for asyncpg.connect().
+
+    There is deliberately no default password: a missing KOI_DB_PASSWORD
+    stops the run instead of trying a password that is published in this repo.
+    Passing fields as keywords (not a URL) also keeps a password containing
+    '@', ':' or '/' intact.
+    """
+    if not DB_CONFIG["password"]:
+        raise SystemExit("KOI_DB_PASSWORD is not set; refusing to connect without it")
+    return dict(DB_CONFIG)
+
 
 STAGING_GRAPH = "regen_graph"
 BATCH_SIZE = 100  # Entities per batch insert
@@ -565,12 +579,12 @@ async def main():
         return
 
     # Connect to database
-    db_url = f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
+    connect_kwargs = _connect_kwargs()
 
     logger.info(f"Connecting to {DB_CONFIG['host']}:{DB_CONFIG['port']}...")
 
     try:
-        conn = await asyncpg.connect(db_url)
+        conn = await asyncpg.connect(**connect_kwargs)
         await setup_age(conn)
 
         if not await create_staging_graph(conn):
