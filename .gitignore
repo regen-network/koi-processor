@@ -75,6 +75,7 @@ config/client_secret_*.json
 *.sql
 *.csv
 !migrations/*.sql
+!schema/*.sql
 
 # Working documents (not part of public codebase)
 prompts/

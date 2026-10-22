@@ -72,13 +72,21 @@ Google OAuth setup for the auth endpoints is described in `config/README.md`.
 
 ## Database
 
-The services share one PostgreSQL database. Schema changes are the SQL files in `migrations/`. There is no migration runner, so apply them with `psql`:
+The services share one PostgreSQL database.
+
+For a new install, create the schema from [`schema/baseline_production.sql`](schema/baseline_production.sql). It is a schema-only snapshot of the 37 KOI tables this code queries, taken from the Regen production database (PostgreSQL 15) on 2026-10-22. It contains no data.
+
+```bash
+psql "$POSTGRES_URL" -v ON_ERROR_STOP=1 -f schema/baseline_production.sql
+```
+
+The event bridges and the knowledge MCP server also read the ElizaOS tables `memories` and `embeddings`. The baseline leaves those out because ElizaOS creates them.
+
+The SQL files in `migrations/` are the historical change log. They do not rebuild the production schema from an empty database: some depend on tables they never create, and some numbers repeat (001, 006, 055). Read each file before applying one to an existing database. There is no migration runner, so apply them with `psql`:
 
 ```bash
 psql "$POSTGRES_URL" -f migrations/003_create_isolated_koi_tables.sql
 ```
-
-Some migration numbers repeat (001, 006, 055) and the sequence has gaps. Read each file before applying it.
 
 ### Isolated KOI tables
 
