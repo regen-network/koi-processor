@@ -39,7 +39,7 @@ DB_CONFIG = {
     "port": int(os.environ.get("KOI_DB_PORT", "5433")),
     "database": os.environ.get("KOI_DB_NAME", "eliza"),
     "user": os.environ.get("KOI_DB_USER", "postgres"),
-    "password": os.environ.get("KOI_DB_PASSWORD", "postgres"),
+    "password": os.environ.get("KOI_DB_PASSWORD"),
 }
 
 ELIGIBLE_NODE_TYPES = ("Function", "Class", "Interface", "Method", "Handler")
@@ -62,11 +62,17 @@ async def setup_age(conn: asyncpg.Connection) -> None:
     await conn.execute("SET search_path = ag_catalog, '$user', public;")
 
 
-def _db_url() -> str:
-    return (
-        f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}"
-        f"@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
-    )
+def _connect_kwargs() -> Dict[str, Any]:
+    """Keyword arguments for asyncpg.connect().
+
+    There is deliberately no default password: a missing KOI_DB_PASSWORD
+    stops the run instead of trying a password that is published in this repo.
+    Passing fields as keywords (not a URL) also keeps a password containing
+    '@', ':' or '/' intact.
+    """
+    if not DB_CONFIG["password"]:
+        raise SystemExit("KOI_DB_PASSWORD is not set; refusing to connect without it")
+    return dict(DB_CONFIG)
 
 
 def _generate_run_id(repo: str) -> str:
@@ -519,7 +525,7 @@ async def main() -> None:
     conn: Optional[asyncpg.Connection] = None
 
     try:
-        conn = await asyncpg.connect(_db_url())
+        conn = await asyncpg.connect(**_connect_kwargs())
         await setup_age(conn)
 
         graph_exists = await conn.fetchval(
