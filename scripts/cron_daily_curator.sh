@@ -4,7 +4,21 @@
 
 # Set up environment
 export PATH="/usr/local/bin:/usr/bin:/bin"
-cd /opt/projects/koi-processor
+cd "${KOI_DIR:-/opt/projects/koi-processor}"
+
+# Database credentials come from .env (gitignored), not from tracked config files.
+# Export only the keys the Python steps read.
+while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+        POSTGRES_URL=*|KOI_DB_PASSWORD=*)
+            value=${line#*=}; value=${value%\"}; value=${value#\"}
+            export "${line%%=*}=$value" ;;
+    esac
+done < .env
+if [ -z "${POSTGRES_URL:-}" ]; then
+    echo "❌ POSTGRES_URL missing from .env"
+    exit 1
+fi
 
 # Activate virtual environment
 source venv/bin/activate

@@ -1,8 +1,8 @@
 # Daily Content Curator Configuration
 # Settings for content aggregation and curation from KOI infrastructure
 
-# Database connection
-database_url: postgresql://postgres:postgres@localhost:5433/eliza
+# Database connection: not set here, so no credential is tracked.
+# DailyCurator reads POSTGRES_URL from the environment; the cron wrappers export it from .env.
 
 # BGE embedding server
 bge_server_url: http://localhost:8090
