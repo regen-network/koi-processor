@@ -118,13 +118,18 @@ class WeeklyAggregator:
     
     def connect_db(self):
         """Connect to PostgreSQL database"""
+        db = self.config["database"]
+        # The password comes from the environment, so the tracked config file holds no credential.
+        password = os.environ.get("KOI_DB_PASSWORD") or db.get("password")
+        if not password:
+            raise RuntimeError("KOI_DB_PASSWORD is not set; refusing to connect")
         try:
             self.db_conn = psycopg2.connect(
-                host=self.config["database"]["host"],
-                port=self.config["database"]["port"],
-                database=self.config["database"]["database"],
-                user=self.config["database"]["user"],
-                password=self.config["database"]["password"]
+                host=db["host"],
+                port=db["port"],
+                database=db["database"],
+                user=db["user"],
+                password=password
             )
             logger.info("Connected to database")
         except Exception as e:
