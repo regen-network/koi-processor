@@ -449,16 +449,16 @@ function updateAlerts(data) {
     if (data.alerts && data.alerts.length > 0) {
         let html = '';
         data.alerts.forEach(alert => {
-            const severityClass = `alert-${alert.severity || 'info'}`;
+            const severityClass = `alert-${escapeHtml(alert.severity || 'info')}`;
             html += `
                 <div class="alert-item ${severityClass}">
                     <div class="d-flex justify-content-between align-items-start">
                         <div>
-                            <strong>${alert.alert_type}</strong>
-                            <p class="mb-0">${alert.message}</p>
+                            <strong>${escapeHtml(alert.alert_type)}</strong>
+                            <p class="mb-0">${escapeHtml(alert.message)}</p>
                             <small class="text-muted">${formatDateTime(alert.created_at)}</small>
                         </div>
-                        ${!alert.resolved ? '<button class="btn btn-sm btn-outline-secondary" onclick="resolveAlert(' + alert.id + ')">Resolve</button>' : ''}
+                        ${!alert.resolved ? '<button class="btn btn-sm btn-outline-secondary" onclick="resolveAlert(' + Number(alert.id) + ')">Resolve</button>' : ''}
                     </div>
                 </div>
             `;

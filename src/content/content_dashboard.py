@@ -23,7 +23,6 @@ from typing import Dict, Any, List, Optional
 import asyncio
 from functools import wraps
 import hmac
-from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash
 from loguru import logger
 from dotenv import load_dotenv
@@ -57,9 +56,30 @@ app.config['COMPRESS_LEVEL'] = 6
 app.config['COMPRESS_MIN_SIZE'] = 500
 # nginx serves the dashboard under /digests/ and strips that prefix. Its /digests locations
 # send X-Forwarded-Prefix, so url_for() (the login redirect and the login form) builds
-# /digests/... URLs. Paths nginx serves elsewhere (/podcast, the weekly-digest API) send no
-# prefix and are unchanged. Only the prefix header is trusted.
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=0, x_proto=0, x_host=0, x_port=0, x_prefix=1)
+# /digests/... URLs. Only the exact value DASHBOARD_URL_PREFIX (default /digests) is honoured;
+# any other value, and requests nginx serves elsewhere (/podcast, the weekly-digest API), get
+# no prefix.
+DASHBOARD_URL_PREFIX = os.environ.get('DASHBOARD_URL_PREFIX', '/digests').rstrip('/')
+
+
+class _TrustedPrefix:
+    def __init__(self, wsgi_app, prefix):
+        self.wsgi_app = wsgi_app
+        self.prefix = prefix
+
+    def __call__(self, environ, start_response):
+        sent = environ.get('HTTP_X_FORWARDED_PREFIX', '').rstrip('/')
+        if self.prefix and sent == self.prefix:
+            environ['SCRIPT_NAME'] = self.prefix
+        return self.wsgi_app(environ, start_response)
+
+
+app.wsgi_app = _TrustedPrefix(app.wsgi_app, DASHBOARD_URL_PREFIX)
+# The session cookie: its own name on a host other apps share, not sent cross-site, and only
+# over HTTPS (DASHBOARD_COOKIE_SECURE=0 for plain-HTTP local testing).
+app.config['SESSION_COOKIE_NAME'] = 'digests_session'
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('DASHBOARD_COOKIE_SECURE', '1') != '0'
 CORS(app)
 Compress(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
@@ -129,6 +149,19 @@ elif not (DASHBOARD_USERNAME and DASHBOARD_PASSWORD_HASH):
     logger.warning("DASHBOARD_USERNAME or DASHBOARD_PASSWORD_HASH is not set: no login will succeed")
 
 
+def _auth_version() -> str:
+    """A tag of the configured login, kept in the session: changing DASHBOARD_USERNAME or
+    DASHBOARD_PASSWORD_HASH ends every existing session (so does rotating FLASK_SECRET_KEY)."""
+    material = (DASHBOARD_USERNAME + '\0' + DASHBOARD_PASSWORD_HASH).encode('utf-8')
+    return hashlib.sha256(material).hexdigest()[:16]
+
+
+def _session_ok() -> bool:
+    return AUTH_DISABLED or (
+        bool(DASHBOARD_USERNAME and DASHBOARD_PASSWORD_HASH)
+        and 'user' in session and session.get('auth') == _auth_version())
+
+
 def _credentials_ok(username: str, password: str) -> bool:
     """Constant-time username check and a password-hash check, both always evaluated."""
     if not (DASHBOARD_USERNAME and DASHBOARD_PASSWORD_HASH):
@@ -145,7 +178,7 @@ def _credentials_ok(username: str, password: str) -> bool:
 def require_auth(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if not AUTH_DISABLED and 'user' not in session:
+        if not _session_ok():
             return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
@@ -1524,6 +1557,7 @@ def serve_podcast_audio(filename):
         return jsonify({'error': 'File not found'}), 404
 
 @app.route('/api/dashboard/drafts/<draft_id>/markdown')
+@require_auth
 def get_draft_markdown(draft_id):
     """Get draft content as markdown for NotebookLM"""
     try:
@@ -2251,7 +2285,9 @@ def generate_audio_for_draft(draft_id):
 # WebSocket events
 @socketio.on('connect')
 def handle_connect():
-    """Handle client connection"""
+    """Handle client connection (refused without a logged-in session)"""
+    if not _session_ok():
+        return False
     logger.info(f"Client connected: {request.sid}")
     emit('connected', {'message': 'Connected to dashboard'})
 
@@ -2337,6 +2373,7 @@ def login():
         if _credentials_ok(username, password):
             session.clear()
             session['user'] = username
+            session['auth'] = _auth_version()
             return redirect(url_for('index'))
         else:
             return render_template('login.html', error='Invalid credentials')
@@ -2346,7 +2383,7 @@ def login():
 @app.route('/logout')
 def logout():
     """Logout user"""
-    session.pop('user', None)
+    session.clear()
     return redirect(url_for('login'))
 
 @app.route('/api/dashboard/generate/daily', methods=['POST'])
