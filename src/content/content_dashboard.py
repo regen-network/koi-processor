@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 import asyncio
 from functools import wraps
+import hmac
+from werkzeug.security import check_password_hash
 from loguru import logger
 from dotenv import load_dotenv
 import httpx
@@ -44,10 +46,40 @@ load_dotenv()
 app = Flask(__name__,
             template_folder='../../templates',
             static_folder='../../static')
-app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
+# Sessions are signed with FLASK_SECRET_KEY. There is deliberately no default: a default in
+# public code would let anyone sign a logged-in session.
+if not os.environ.get('FLASK_SECRET_KEY'):
+    raise RuntimeError("FLASK_SECRET_KEY is not set; the content dashboard signs its sessions with it")
+app.config['SECRET_KEY'] = os.environ['FLASK_SECRET_KEY']
 app.config['COMPRESS_MIMETYPES'] = ['application/json', 'text/html', 'text/css', 'application/javascript']
 app.config['COMPRESS_LEVEL'] = 6
 app.config['COMPRESS_MIN_SIZE'] = 500
+# nginx serves the dashboard under /digests/ and strips that prefix. Its /digests locations
+# send X-Forwarded-Prefix, so url_for() (the login redirect and the login form) builds
+# /digests/... URLs. Only the exact value DASHBOARD_URL_PREFIX (default /digests) is honoured;
+# any other value, and requests nginx serves elsewhere (/podcast, the weekly-digest API), get
+# no prefix.
+DASHBOARD_URL_PREFIX = os.environ.get('DASHBOARD_URL_PREFIX', '/digests').rstrip('/')
+
+
+class _TrustedPrefix:
+    def __init__(self, wsgi_app, prefix):
+        self.wsgi_app = wsgi_app
+        self.prefix = prefix
+
+    def __call__(self, environ, start_response):
+        sent = environ.get('HTTP_X_FORWARDED_PREFIX', '').rstrip('/')
+        if self.prefix and sent == self.prefix:
+            environ['SCRIPT_NAME'] = self.prefix
+        return self.wsgi_app(environ, start_response)
+
+
+app.wsgi_app = _TrustedPrefix(app.wsgi_app, DASHBOARD_URL_PREFIX)
+# The session cookie: its own name on a host other apps share, not sent cross-site, and only
+# over HTTPS (DASHBOARD_COOKIE_SECURE=0 for plain-HTTP local testing).
+app.config['SESSION_COOKIE_NAME'] = 'digests_session'
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('DASHBOARD_COOKIE_SECURE', '1') != '0'
 CORS(app)
 Compress(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
@@ -103,13 +135,51 @@ def get_db_connection():
     """Create a database connection"""
     return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
 
-# Authentication decorator (simple for now)
+# Login. The credentials come from the environment: DASHBOARD_USERNAME and
+# DASHBOARD_PASSWORD_HASH (a werkzeug.security hash, e.g. from generate_password_hash). With
+# either unset, no login succeeds. The login is enforced unless DASHBOARD_AUTH_DISABLED=1
+# (local development only). dashboard_config.yaml's auth_enabled is not read for this: in
+# production that file is not at the path load_config() reads, so the login was silently off.
+DASHBOARD_USERNAME = os.environ.get('DASHBOARD_USERNAME', '')
+DASHBOARD_PASSWORD_HASH = os.environ.get('DASHBOARD_PASSWORD_HASH', '')
+AUTH_DISABLED = os.environ.get('DASHBOARD_AUTH_DISABLED') == '1'
+if AUTH_DISABLED:
+    logger.warning("DASHBOARD_AUTH_DISABLED=1: the dashboard login is off")
+elif not (DASHBOARD_USERNAME and DASHBOARD_PASSWORD_HASH):
+    logger.warning("DASHBOARD_USERNAME or DASHBOARD_PASSWORD_HASH is not set: no login will succeed")
+
+
+def _auth_version() -> str:
+    """A tag of the configured login, kept in the session: changing DASHBOARD_USERNAME or
+    DASHBOARD_PASSWORD_HASH ends every existing session (so does rotating FLASK_SECRET_KEY)."""
+    material = (DASHBOARD_USERNAME + '\0' + DASHBOARD_PASSWORD_HASH).encode('utf-8')
+    return hashlib.sha256(material).hexdigest()[:16]
+
+
+def _session_ok() -> bool:
+    return AUTH_DISABLED or (
+        bool(DASHBOARD_USERNAME and DASHBOARD_PASSWORD_HASH)
+        and 'user' in session and session.get('auth') == _auth_version())
+
+
+def _credentials_ok(username: str, password: str) -> bool:
+    """Constant-time username check and a password-hash check, both always evaluated."""
+    if not (DASHBOARD_USERNAME and DASHBOARD_PASSWORD_HASH):
+        return False
+    user_ok = hmac.compare_digest(username.encode('utf-8'), DASHBOARD_USERNAME.encode('utf-8'))
+    try:
+        password_ok = check_password_hash(DASHBOARD_PASSWORD_HASH, password)
+    except ValueError:  # a malformed hash in the environment
+        logger.error("DASHBOARD_PASSWORD_HASH is not a valid werkzeug.security hash")
+        return False
+    return user_ok and password_ok
+
+
 def require_auth(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if config['dashboard'].get('auth_enabled', False):
-            if 'user' not in session:
-                return redirect(url_for('login'))
+        if not _session_ok():
+            return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
 
@@ -1487,6 +1557,7 @@ def serve_podcast_audio(filename):
         return jsonify({'error': 'File not found'}), 404
 
 @app.route('/api/dashboard/drafts/<draft_id>/markdown')
+@require_auth
 def get_draft_markdown(draft_id):
     """Get draft content as markdown for NotebookLM"""
     try:
@@ -2214,7 +2285,9 @@ def generate_audio_for_draft(draft_id):
 # WebSocket events
 @socketio.on('connect')
 def handle_connect():
-    """Handle client connection"""
+    """Handle client connection (refused without a logged-in session)"""
+    if not _session_ok():
+        return False
     logger.info(f"Client connected: {request.sid}")
     emit('connected', {'message': 'Connected to dashboard'})
 
@@ -2295,13 +2368,12 @@ def notify_update():
 def login():
     """Simple login page"""
     if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        
-        # Simple hardcoded auth for now
-        # In production, use proper authentication
-        if username == 'admin' and password == 'regen2025':
+        username = request.form.get('username') or ''
+        password = request.form.get('password') or ''
+        if _credentials_ok(username, password):
+            session.clear()
             session['user'] = username
+            session['auth'] = _auth_version()
             return redirect(url_for('index'))
         else:
             return render_template('login.html', error='Invalid credentials')
@@ -2311,7 +2383,7 @@ def login():
 @app.route('/logout')
 def logout():
     """Logout user"""
-    session.pop('user', None)
+    session.clear()
     return redirect(url_for('login'))
 
 @app.route('/api/dashboard/generate/daily', methods=['POST'])

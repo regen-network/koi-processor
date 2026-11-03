@@ -59,6 +59,9 @@ Variables read by the code include:
 |---|---|---|
 | `POSTGRES_URL` | `koi-query-api.ts`, `api/personal_ingest_api.py`, `adaptive_extraction_api.py`, both event bridges, `src/core/koi_knowledge_mcp_server.py`, the curation scripts in `src/content/` | PostgreSQL connection string |
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | `src/content/content_dashboard.py` | Database connection for the dashboard |
+| `FLASK_SECRET_KEY` | `src/content/content_dashboard.py` | Signs the dashboard's sessions; required (the dashboard refuses to start without it). Rotating it logs everyone out |
+| `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD_HASH` | `src/content/content_dashboard.py` | The dashboard login; the hash is a `werkzeug.security` hash. With either unset, no login succeeds |
+| `DASHBOARD_AUTH_DISABLED`, `DASHBOARD_COOKIE_SECURE`, `DASHBOARD_URL_PREFIX` | `src/content/content_dashboard.py` | Local development only: `DASHBOARD_AUTH_DISABLED=1` turns the login off and `DASHBOARD_COOKIE_SECURE=0` allows the session cookie over plain HTTP. `DASHBOARD_URL_PREFIX` (default `/digests`) is the only `X-Forwarded-Prefix` value honoured |
 | `BGE_API_URL` | event bridges, MCP server | Embedding endpoint (default `http://localhost:8090/encode`) |
 | `USE_ISOLATED_TABLES` | `src/core/koi_event_bridge_v2.py` | Write to `koi_memories` and `koi_embeddings` (default `true`) |
 | `KG_EXTRACTION_ENABLED` | `src/core/koi_event_bridge_v2.py` | Knowledge graph extraction (code default `false`; `.env.example` sets `true`) |

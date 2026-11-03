@@ -198,7 +198,7 @@ logging:
 # Security settings
 security:
   # Secret key for sessions (override in production!)
-  secret_key: ${FLASK_SECRET_KEY:-dev-secret-key-change-in-production}
+  secret_key: ${FLASK_SECRET_KEY}  # not read by the code; FLASK_SECRET_KEY is required
   
   # CORS settings
   cors_enabled: true
