@@ -274,7 +274,7 @@ class IngestResponse(BaseModel):
 
 class RegisterEntityRequest(BaseModel):
     """Request to register a vault entity"""
-    vault_rid: str  # e.g., "orn:obsidian.entity:Notes/Person/clare-attwell"
+    vault_rid: str  # e.g., "orn:obsidian.entity:Notes/Person/corin-ashgrove"
     vault_path: str  # e.g., "People/Jane Doe.md"
     entity_type: str  # Person, Organization, etc.
     name: str
@@ -434,7 +434,7 @@ def get_phonetic_code(text: str) -> Optional[str]:
     """
     Get Double Metaphone code for first token of text.
 
-    Uses first token only to handle cases like "Mihal" vs "Mehul Sangham"
+    Uses first token only to handle cases like "Mable" vs "Mabel Sedgewick"
     where full-name comparison would fail but first-token matches.
     """
     if not text:
@@ -903,7 +903,7 @@ async def resolve_entity(
                 best = contextual_candidates[0]
                 has_phonetic = best.get('phonetic_match', False)
 
-                # Token overlap guard for multi-token names (prevents "Silke Helfrich" -> "Simon Grant")
+                # Token overlap guard for multi-token names (prevents "Silke Helfrich" -> "Soren Greywell")
                 # If both names have 2+ tokens and share zero tokens, reject regardless of score
                 query_tokens = set(normalized.lower().split())
                 candidate_tokens = set(best.get('normalized_text', best['name']).lower().split())
@@ -916,7 +916,7 @@ async def resolve_entity(
                     # Two-tier threshold: phonetic matches get lower bar (strong evidence)
                     # Non-phonetic matches need higher score to avoid false positives
                     threshold_phonetic = 0.6      # "Quoxala" -> "Kwaxala" (same sound)
-                    threshold_no_phonetic = 0.75  # Stricter: avoid "Miranda" -> "Mehul Sangham"
+                    threshold_no_phonetic = 0.75  # Stricter: avoid "Miranda" -> "Mabel Sedgewick"
 
                     effective_threshold = threshold_phonetic if has_phonetic else threshold_no_phonetic
 
@@ -3302,13 +3302,13 @@ async def resolve_canonical_to_vault(uris: List[str]):
 
     Example:
         POST /resolve-to-vault
-        ["orn:personal-koi.entity:person-clare-attwell-abc123", ...]
+        ["orn:personal-koi.entity:person-corin-ashgrove-abc123", ...]
 
         Returns:
         {
             "mappings": [
                 {
-                    "canonical_uri": "orn:personal-koi.entity:person-clare-attwell-abc123",
+                    "canonical_uri": "orn:personal-koi.entity:person-corin-ashgrove-abc123",
                     "vault_path": "People/Jane Doe.md",
                     "name": "Jane Doe",
                     "wikilink": "[[People/Jane Doe]]"
