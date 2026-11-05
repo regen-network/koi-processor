@@ -26,7 +26,6 @@ fi
 COORDINATOR_URL="http://localhost:8005/health"
 EVENT_BRIDGE_URL="http://localhost:8100/health"
 BGE_SERVER_URL="http://localhost:8090/health"
-MCP_SERVER_URL="http://localhost:8200"
 POSTGRES_HOST="localhost"
 POSTGRES_PORT="5433"
 
@@ -186,7 +185,6 @@ main() {
     check_service "KOI Coordinator" "$COORDINATOR_URL" || all_ok=false
     check_service "Event Bridge" "$EVENT_BRIDGE_URL" || all_ok=false
     check_service "BGE Server" "$BGE_SERVER_URL" || all_ok=false
-    check_service "MCP Server" "$MCP_SERVER_URL" || all_ok=false
     
     # Check database
     echo -e "\n💾 Database:"
@@ -197,7 +195,6 @@ main() {
 check_process "Coordinator" "run_coordinator.py"
     check_process "Event Bridge" "koi_event_bridge_v2.py"
     check_process "BGE Server" "bge_server.py"
-    check_process "MCP Server" "koi_knowledge_mcp_server.py"
     
     # Check system resources
     echo -e "\n💿 System Resources:"
