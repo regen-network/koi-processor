@@ -1,7 +1,9 @@
 """Forwarder delivery classification and dead-letter handling (offline).
 
-Exercises src/core/forwarder_delivery.py, new on this branch (so the import
-fails on base and passes here). No network and no signing key needed.
+Exercises scripts/forwarder_delivery.py, new on this branch (so the import
+fails on base and passes here). It lives in scripts/ beside the forwarder that
+uses it (like koi_envelope.py), so the forwarder's bare import resolves at
+runtime. No network and no signing key needed.
 """
 from __future__ import annotations
 
@@ -12,8 +14,8 @@ import sys
 
 import pytest
 
-CORE = pathlib.Path(__file__).resolve().parents[1] / "src" / "core"
-sys.path.insert(0, str(CORE))
+SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+sys.path.insert(0, str(SCRIPTS))
 
 import forwarder_delivery as fd  # noqa: E402
 
