@@ -167,9 +167,11 @@ async def generate_embedding_bge(text: str) -> List[float]:
     """Generate BGE embedding via API"""
     async with httpx.AsyncClient(timeout=BGE_TIMEOUT) as client:
         try:
+            # lane=ingest: the bridge is the bulk/background caller, so bge keeps
+            # interactive search (lane=query, the default) from being starved.
             response = await client.post(
                 BGE_API_URL,
-                json={"text": text}  # Some servers use "text"
+                json={"text": text, "lane": "ingest"}  # Some servers use "text"
             )
             # Retry with the "input" field name only for a field-shape mismatch.
             # Do NOT retry on overload (503) or payload-too-large (413): a retry
@@ -177,7 +179,7 @@ async def generate_embedding_bge(text: str) -> List[float]:
             if response.status_code != 200 and response.status_code not in (503, 413):
                 response = await client.post(
                     BGE_API_URL,
-                    json={"input": text}
+                    json={"input": text, "lane": "ingest"}
                 )
 
             if response.status_code == 200:
