@@ -567,7 +567,7 @@ def passes_token_overlap_check(text1: str, text2: str, entity_type: str) -> bool
     if not schema.require_token_overlap:
         # Even with token overlap bypassed, guard against first-name inflation for
         # 2-token full names (First Last): require the last tokens (family names)
-        # to have a minimum JW similarity so "Benjamin Life" ≠ "Benjamin Neal".
+        # to have a minimum JW similarity so "Bram Lowe" ≠ "Bram Nash".
         if len(tokens1) == 2 and len(tokens2) == 2:
             last_jw = jaro_winkler_similarity(tokens1[-1], tokens2[-1])
             if last_jw < 0.75:
@@ -3742,17 +3742,17 @@ async def get_contextual_candidates(request: ContextualCandidatesRequest):
     - Similar topics
 
     Use case: When processing a meeting that mentions "Sean", this endpoint
-    can return "Shawn Anderson" as a candidate if they attended other meetings
+    can return "Sasha Ainsley" as a candidate if they attended other meetings
     for the same project.
 
     Example:
         POST /get-contextual-candidates
-        {"project": "GLOTCHA", "attendees": ["Mehul Patel"], "entity_types": ["Person"]}
+        {"project": "GLOTCHA", "attendees": ["Mabel Prescott"], "entity_types": ["Person"]}
 
         Returns:
         {
             "candidates": [
-                {"name": "Shawn Anderson", "uri": "orn:...", "source_documents": [...]}
+                {"name": "Sasha Ainsley", "uri": "orn:...", "source_documents": [...]}
             ],
             "related_documents": [...],
             "context_types": ["project"]
