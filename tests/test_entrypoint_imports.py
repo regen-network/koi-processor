@@ -88,3 +88,21 @@ def test_bridge_preflight_runs_like_systemd():
     assert r.returncode == 0, (
         f"bridge --preflight failed (rc={r.returncode}):\n{r.stdout}\n{r.stderr}"
     )
+
+
+def test_bge_server_preflight_runs_like_systemd():
+    """koi-bge-server.service runs ``python src/core/bge_server.py``. ``--preflight``
+    validates config and exits before uvicorn, so it is offline. With an API key
+    present it exits 0; this proves the bge import chain (incl. the sibling
+    ``bge_hardening`` module) resolves under the real cwd."""
+    r = subprocess.run(
+        [sys.executable, "src/core/bge_server.py", "--preflight"],
+        cwd=str(REPO),
+        env=_unit_env(OPENAI_API_KEY="offline-preflight-test-key-not-real"),
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert r.returncode == 0, (
+        f"bge --preflight failed (rc={r.returncode}):\n{r.stdout}\n{r.stderr}"
+    )
