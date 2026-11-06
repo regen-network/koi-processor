@@ -106,3 +106,52 @@ def test_bge_server_preflight_runs_like_systemd():
     assert r.returncode == 0, (
         f"bge --preflight failed (rc={r.returncode}):\n{r.stdout}\n{r.stderr}"
     )
+
+
+def test_github_webhook_entrypoint_imports_like_systemd():
+    """koi-webhook.service runs ``uvicorn api.github_webhook:app`` from the repo
+    root with ``PYTHONPATH=<repo>`` - the repo root, not ``src``, unlike the units
+    above. ``api/github_webhook.py`` imports ``is_private_repo`` from ``src/core``
+    via its own in-module ``sys.path`` insert. Import the module the prod way and
+    assert both the ASGI ``app`` and the guard symbol resolve; this fails if
+    ``src/core/private_repos.py`` is missing or unreachable from this entry point."""
+    code = (
+        "import api.github_webhook as m; "
+        "assert hasattr(m, 'app'), 'no ASGI app'; "
+        "assert hasattr(m, 'is_private_repo'), 'guard import did not resolve'; "
+        "print('WEBHOOK_IMPORT_OK')"
+    )
+    r = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=str(REPO),
+        env=_unit_env(PYTHONPATH=str(REPO)),  # the webhook unit's PYTHONPATH is the repo root
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert r.returncode == 0, f"webhook entry-point import failed:\n{r.stderr}"
+    assert "WEBHOOK_IMPORT_OK" in r.stdout
+
+
+def test_load_to_staging_entrypoint_refuses_private_like_shell():
+    """load_to_staging is run by hand as ``python scripts/load_to_staging.py
+    --repo <r> --path <p>`` from the repo root. The script inserts ``src/core`` on
+    ``sys.path`` and imports ``refuse_private_cli`` at module top, so a private repo
+    is refused with exit 3 right after arg parsing - before the lazy tree-sitter
+    import or any DB work. Running it the shell way proves the top-level
+    ``private_repos`` import resolves as ``__main__`` and that the guard fires at the
+    real entry point. If ``private_repos.py`` is missing, the module-top import
+    raises ``ImportError`` (exit 1, not 3) and this fails."""
+    r = subprocess.run(
+        [sys.executable, "scripts/load_to_staging.py",
+         "--repo", "koi-processor", "--path", "/nonexistent-repo-path"],
+        cwd=str(REPO),
+        env=dict(os.environ),
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert r.returncode == 3, (
+        f"expected exit 3 (private-repo refusal) at the load_to_staging entry point, "
+        f"got rc={r.returncode}:\n{r.stdout}\n{r.stderr}"
+    )
