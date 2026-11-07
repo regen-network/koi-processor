@@ -24,6 +24,10 @@ from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from loguru import logger
 
+# src/core holds the shared private-repo list; add it to the path like the loaders do.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src" / "core"))
+from private_repos import is_private_repo  # noqa: E402
+
 # Configuration
 WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET", "")
 # Default to /opt/projects for production, override with CODE_GRAPH_BASE_PATH for local dev
@@ -100,6 +104,12 @@ def verify_signature(payload: bytes, signature: str) -> bool:
 
 async def run_extraction(repo_name: str, repo_path: Path, trigger: str = "webhook"):
     """Run extraction for a single repo."""
+    if is_private_repo(repo_name):
+        logger.warning(
+            f"Skipping extraction for private repo '{repo_name}': its code graph "
+            f"must not be served via the unauthenticated /api/koi/graph."
+        )
+        return
     if repo_name in running_extractions:
         logger.info(f"Extraction already running for {repo_name}, skipping")
         return

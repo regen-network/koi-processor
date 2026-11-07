@@ -13,6 +13,8 @@ Usage (local with SSH tunnel):
     python scripts/load_to_staging.py --repo regen-ledger --path /path/to/repo
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import argparse
@@ -29,7 +31,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "core"))
 import asyncpg
 from loguru import logger
 
-from tree_sitter_extractor import TreeSitterExtractor, CodeEntity, CodeEdge
+from private_repos import refuse_private_cli  # src/core is on sys.path (above)
+
+# TreeSitterExtractor is imported lazily in main() (right before it is used), so a
+# private-repo refusal does not require loading the tree-sitter parser stack. The
+# type names below are only used in annotations, resolved as strings via the
+# ``from __future__ import annotations`` above.
 
 
 # Database configuration
@@ -530,8 +537,18 @@ async def main():
     parser.add_argument("--dry-run", action="store_true", help="Extract without loading")
     parser.add_argument("--clear-first", action="store_true", help="Clear existing data first")
     parser.add_argument("--skip-edges", action="store_true", help="Skip edge loading (faster)")
+    parser.add_argument(
+        "--allow-private",
+        action="store_true",
+        help="Override the private-repo guard (exposes its structure in the "
+             "anonymously-served regen_graph). Do not use without a reason.",
+    )
 
     args = parser.parse_args()
+
+    # Private-repo ingest guard: regen_graph is served unauthenticated via
+    # /api/koi/graph, so private repos must not be loaded into it.
+    refuse_private_cli(args.repo, args.allow_private, log=logger)
 
     repo_path = Path(args.path)
     if not repo_path.exists():
@@ -553,7 +570,8 @@ async def main():
 
     start_time = time.time()
 
-    # Initialize extractor
+    # Initialize extractor (heavy import, loaded only after the guard above)
+    from tree_sitter_extractor import TreeSitterExtractor
     extractor = TreeSitterExtractor()
 
     # Extract entities and edges
