@@ -19,6 +19,7 @@ import json
 import time
 import secrets
 import hashlib
+import html
 import httpx
 import urllib.parse
 import string
@@ -722,7 +723,10 @@ async def activate_page(error: Optional[str] = None):
             "used": "This code has already been used.",
             "locked": "Too many failed attempts. This code has been locked for security.",
         }
-        error_html = f'<div class="error">{error_messages.get(error, error)}</div>'
+        # Known codes only: the caller's query value is never echoed into the
+        # page. An unknown code falls back to a fixed, generic message.
+        message = error_messages.get(error, "Something went wrong. Please try again.")
+        error_html = f'<div class="error">{html.escape(message)}</div>'
 
     return ACTIVATE_HTML.format(error_html=error_html)
 
