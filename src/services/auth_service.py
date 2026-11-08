@@ -873,7 +873,7 @@ async def auth_callback(code: str, state: str, db=Depends(get_db)):
         logger.warning(f"[Auth] JWT validation failed: {e}")
         await db.execute("UPDATE auth_requests SET status = 'rejected' WHERE id = $1", auth_request['id'])
         return HTMLResponse(
-            content=f"<h1>Verification Failed</h1><p>{str(e)}</p>",
+            content=f"<h1>Verification Failed</h1><p>{html.escape(str(e))}</p>",
             status_code=400
         )
 
@@ -928,7 +928,7 @@ async def auth_callback(code: str, state: str, db=Depends(get_db)):
         _set_session_cookie(response, session_token, session_expiry)
         return response
 
-    return SUCCESS_HTML.format(email=verified_email)
+    return SUCCESS_HTML.format(email=html.escape(verified_email))
 
 
 # =============================================================================
@@ -1028,34 +1028,18 @@ async def get_authorized_user(
 
 
 @router.get("/auth/status")
-async def check_auth_status_legacy(device_code: str, db=Depends(get_db)):
+async def check_auth_status_legacy():
     """
-    DEPRECATED: Use POST /auth/token instead.
+    RETIRED: this endpoint has been removed. Use POST /auth/token instead.
 
-    Kept for backwards compatibility during migration.
+    Returns 410 Gone. It previously delegated to the device-code token
+    exchange; clients must now call the RFC 8628 token endpoint directly.
     """
-    logger.warning("[Auth] Legacy GET /auth/status endpoint used - please migrate to POST /auth/token")
-
-    # Delegate to the new endpoint logic
-    request = TokenRequest(device_code=device_code)
-    result = await exchange_device_code(request, db)
-
-    # Convert to old response format
-    if isinstance(result, TokenResponse):
-        return {
-            "status": "authenticated",
-            "authenticated": True,
-            "session_token": result.access_token
-        }
-    elif isinstance(result, TokenErrorResponse):
-        if result.error == "authorization_pending":
-            return {"status": "pending", "authenticated": False}
-        elif result.error == "access_denied":
-            return {"status": "rejected", "authenticated": False, "message": result.error_description}
-        else:
-            return {"status": result.error, "authenticated": False, "message": result.error_description}
-
-    return result
+    logger.warning("[Auth] Retired GET /auth/status called - clients must use POST /auth/token")
+    raise HTTPException(
+        status_code=410,
+        detail="GET /auth/status has been retired. Use POST /auth/token instead.",
+    )
 
 
 # =============================================================================
