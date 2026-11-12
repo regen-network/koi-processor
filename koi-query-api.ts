@@ -15,6 +15,16 @@ import { Pool } from "pg";
 // proxyToService that forwarded req.originalUrl to the internal services).
 import { createRidLookupHandler, RID_LOOKUP_ROUTE } from "./koi-service-proxy.ts";
 
+// Search filters shared by every candidate path, and entity-match strength.
+import {
+  normalizeSearchFilters,
+  buildSearchFilterClause,
+  hasSearchFilter,
+  strongEntityTerms,
+  isStrongEntityMatch,
+  STOPWORDS,
+} from "./search-filters.ts";
+
 // Import the adaptive features
 import {
   reciprocalRankFusion,
@@ -1146,7 +1156,7 @@ async function getGraphContext(
 
 // Entity-based graph search using koi_entity_chunk_links
 // Detects entities in query and returns memories where those entities appear
-async function performEntitySearch(query: string, topK: number = 20, privacyFilter: string = '') {
+async function performEntitySearch(query: string, topK: number = 20, privacyFilter: string = '', filters?: any) {
   try {
     // Extract potential entity names from query (words and phrases of 2-4 words)
     const words = query.toLowerCase()
@@ -1158,8 +1168,10 @@ async function performEntitySearch(query: string, topK: number = 20, privacyFilt
       return [];
     }
 
-    // Build patterns to match: individual words and adjacent word pairs/triples
-    const patterns: string[] = [...words];
+    // Build patterns to match: individual words and adjacent word pairs/triples.
+    // A stopword never matches on its own (extraction has produced entities
+    // named "You" and "This"), but it still joins phrases.
+    const patterns: string[] = words.filter(w => !STOPWORDS.has(w));
     for (let i = 0; i < words.length - 1; i++) {
       patterns.push(`${words[i]} ${words[i+1]}`);
       if (i < words.length - 2) {
@@ -1170,11 +1182,13 @@ async function performEntitySearch(query: string, topK: number = 20, privacyFilt
     // FIX-018: Expand patterns with canonical aliases (e.g., "BCT" → "Base Carbon Tonne")
     const expandedPatterns = new Set(patterns);
     const canonicalExpansions: string[] = [];
+    const aliasTerms: string[] = [];  // patterns with a canonical alias, and their canonical names
     for (const pattern of patterns) {
       const canonical = resolveCanonicalAlias(pattern);
       if (canonical && canonical.canonical_name) {
         // Add the canonical name (normalized to lowercase)
         const canonicalLower = canonical.canonical_name.toLowerCase();
+        aliasTerms.push(pattern, canonicalLower);
         if (!expandedPatterns.has(canonicalLower)) {
           expandedPatterns.add(canonicalLower);
           canonicalExpansions.push(`${pattern} → ${canonical.canonical_name}`);
@@ -1187,11 +1201,19 @@ async function performEntitySearch(query: string, topK: number = 20, privacyFilt
       }
     }
     const finalPatterns = Array.from(expandedPatterns);
+    if (finalPatterns.length === 0) {
+      return [];
+    }
+    const strongTerms = strongEntityTerms(query, finalPatterns, aliasTerms);
 
     // Log canonical expansions for debugging
     if (canonicalExpansions.length > 0) {
       console.log(`[EntitySearch] Canonical expansions: ${canonicalExpansions.join(', ')}`);
     }
+
+    // Source and date filters apply here too, before ranking and LIMIT.
+    const entityParams: any[] = [finalPatterns, topK];
+    const entityFilterClause = buildSearchFilterClause(filters, entityParams, 'm');
 
     // Query for entities matching these patterns
     // Uses source-diversity sampling to prevent any single source from dominating
@@ -1242,6 +1264,7 @@ async function performEntitySearch(query: string, topK: number = 20, privacyFilt
         WHERE m.superseded_at IS NULL
           AND m.content->>'text' IS NOT NULL
           ${privacyFilter}
+          ${entityFilterClause}
       ),
       non_web_ranked AS (
         SELECT *, ROW_NUMBER() OVER (
@@ -1285,7 +1308,7 @@ async function performEntitySearch(query: string, topK: number = 20, privacyFilt
       LIMIT $2
     `;
 
-    const results = await pool.query(entityQuery, [finalPatterns, topK]);
+    const results = await pool.query(entityQuery, entityParams);
 
     // Calculate scores based on entity count (normalized)
     const maxCount = results.rows.length > 0
@@ -1361,6 +1384,7 @@ async function performEntitySearch(query: string, topK: number = 20, privacyFilt
         url: typeof row.url === 'string' ? row.url.trim() : row.url,
         entities_matched: row.entities_matched,
         entity_count: parseInt(row.entity_count),
+        strong_entity_match: isStrongEntityMatch(row.entities_matched, strongTerms),
         published_at: row.published_at || null
       },
       rid: row.rid
@@ -1387,19 +1411,8 @@ async function performSemanticSearch(query: string, topK: number = 10, filters?:
     if (!bgeResponse.ok) {
       console.log('BGE API not available, falling back to ILIKE search');
       // Fallback to simple text search when BGE API is not available
-      const dateClauses: string[] = [];
       const params: any[] = [`%${query}%`, `%${query.replace(/\s+/g, '%')}%`];
-      if (filters?.date_range?.start) {
-        dateClauses.push(`m.published_at >= $${params.length + 1}::timestamptz`);
-        params.push(filters.date_range.start);
-      }
-      if (filters?.date_range?.end) {
-        dateClauses.push(`m.published_at <= $${params.length + 1}::timestamptz`);
-        params.push(filters.date_range.end);
-      }
-      const whereDate = dateClauses.length
-        ? ` AND (${dateClauses.join(' AND ')}${filters?.include_undated ? ' OR m.published_at IS NULL' : ''})`
-        : '';
+      const whereDate = buildSearchFilterClause(filters, params, 'm');
       const fallbackQuery = `
         SELECT
           m.rid,
@@ -1447,20 +1460,9 @@ async function performSemanticSearch(query: string, topK: number = 10, filters?:
     // Convert array to PostgreSQL vector format
     const vectorString = `[${queryEmbedding.join(',')}]`;
 
-    // Optional date filters
-    const dateClauses: string[] = [];
+    // Optional source and date filters
     const params: any[] = [vectorString];
-    if (filters?.date_range?.start) {
-      dateClauses.push(`m.published_at >= $${params.length + 1}::timestamptz`);
-      params.push(filters.date_range.start);
-    }
-    if (filters?.date_range?.end) {
-      dateClauses.push(`m.published_at <= $${params.length + 1}::timestamptz`);
-      params.push(filters.date_range.end);
-    }
-    const andDate = dateClauses.length
-      ? ` AND (${dateClauses.join(' AND ')}${filters?.include_undated ? ' OR m.published_at IS NULL' : ''})`
-      : '';
+    const andDate = buildSearchFilterClause(filters, params, 'm');
 
     const searchQuery = `
       WITH vector_results AS (
@@ -1501,7 +1503,27 @@ async function performSemanticSearch(query: string, topK: number = 10, filters?:
     `;
 
     params.push(topK);
-    const results = await pool.query(searchQuery, params);
+    let results;
+    if (hasSearchFilter(filters)) {
+      // The HNSW index returns about hnsw.ef_search (default 40) nearest rows
+      // before the WHERE clause runs, so a filter can leave almost nothing
+      // (a one-year window returned 9 of 60 rows). Widen the candidate list
+      // for filtered queries. pgvector 0.5 has no iterative index scan.
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('SET LOCAL hnsw.ef_search = 1000');
+        results = await client.query(searchQuery, params);
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    } else {
+      results = await pool.query(searchQuery, params);
+    }
 
     return results.rows.map(row => ({
       id: row.rid,
@@ -1580,19 +1602,8 @@ async function performKeywordSearch(query: string, topK: number = 10, filters?: 
     const prefixAndQuery = words.map(w => `${w}:*`).join(' & ');
 
     // Try AND first, then fall back to OR for broader matching
-    const dateClauses: string[] = [];
     const params: any[] = [andQuery, orQuery, prefixAndQuery];
-    if (filters?.date_range?.start) {
-      dateClauses.push(`published_at >= $${params.length + 1}::timestamptz`);
-      params.push(filters.date_range.start);
-    }
-    if (filters?.date_range?.end) {
-      dateClauses.push(`published_at <= $${params.length + 1}::timestamptz`);
-      params.push(filters.date_range.end);
-    }
-    const whereCombined = dateClauses.length
-      ? `WHERE (${dateClauses.join(' AND ')}${filters?.include_undated ? ' OR published_at IS NULL' : ''})`
-      : '';
+    const andFilters = buildSearchFilterClause(filters, params, 'm');
 
     const searchQuery = `
       WITH combined AS (
@@ -1613,6 +1624,7 @@ async function performKeywordSearch(query: string, topK: number = 10, filters?: 
           )
           AND m.superseded_at IS NULL
           ${privacyFilter}
+          ${andFilters}
 
         UNION ALL
 
@@ -1634,6 +1646,7 @@ async function performKeywordSearch(query: string, topK: number = 10, filters?: 
           )
           AND m.superseded_at IS NULL
           ${privacyFilter}
+          ${andFilters}
           AND NOT EXISTS (
             SELECT 1 FROM koi_memories m2
             WHERE m2.rid = m.rid
@@ -1648,7 +1661,6 @@ async function performKeywordSearch(query: string, topK: number = 10, filters?: 
             ORDER BY rank DESC, match_type
           ) as content_rank
         FROM combined
-        ${whereCombined}
       )
       SELECT rid, content, source, url, rank, match_type, published_at
       FROM deduplicated
@@ -1713,19 +1725,8 @@ async function performKeywordSearch(query: string, topK: number = 10, filters?: 
   } catch (error) {
     console.error('[Keyword Search] FTS FAILED, falling back to ILIKE:', error);
     // Fallback to ILIKE if FTS fails
-    const dateClauses: string[] = [];
     const params: any[] = [`%${query}%`, `%${query}%`];
-    if (filters?.date_range?.start) {
-      dateClauses.push(`m.published_at >= $${params.length + 1}::timestamptz`);
-      params.push(filters.date_range.start);
-    }
-    if (filters?.date_range?.end) {
-      dateClauses.push(`m.published_at <= $${params.length + 1}::timestamptz`);
-      params.push(filters.date_range.end);
-    }
-    const andDate = dateClauses.length
-      ? ` AND (${dateClauses.join(' AND ')}${filters?.include_undated ? ' OR m.published_at IS NULL' : ''})`
-      : '';
+    const andDate = buildSearchFilterClause(filters, params, 'm');
 
     const fallbackQuery = `
       SELECT
@@ -1784,9 +1785,12 @@ app.post('/api/koi/query', async (req, res) => {
       user_id = 'web-user',
       agent_id = 'koi-interface',
       limit = 10,
-      filters = {},
+      filters: rawFilters = {},
+      source: bodySource,
       graph_context: requestGraphContext = false  // Week 13: GraphRAG body field
     } = req.body;
+    // regen-koi-mcp sends `source` as a top-level field; until now it was ignored.
+    const filters = normalizeSearchFilters(rawFilters, bodySource);
 
     // Accept either 'question' or 'query' parameter (question takes precedence)
     const question = questionParam || queryParam;
@@ -1837,7 +1841,7 @@ app.post('/api/koi/query', async (req, res) => {
     try {
       [vectorResults, entityResults, keywordResults] = await Promise.all([
         performSemanticSearch(question, 20, filters, privacyFilter),
-        performEntitySearch(question, 100, privacyFilter).catch(e => {
+        performEntitySearch(question, 100, privacyFilter, filters).catch(e => {
           console.error('[EntitySearch] Error:', e);
           return [];
         }),
@@ -5839,10 +5843,18 @@ app.get('/api/koi/ping', (req, res) => {
 // Debug endpoint for entity search testing
 app.get('/api/koi/debug-entity', async (req, res) => {
   const query = (req.query.q as string) || "What is the Regen Network?";
+  // An empty privacy filter means "all rows", so this route needs a session,
+  // like /api/koi/query does for private rows.
+  const authHeader = req.headers['authorization'] as string | undefined;
+  const sessionToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
+  const authenticatedEmail = await validateSessionToken(sessionToken);
+  if (!authenticatedEmail) {
+    return res.status(401).json({ error: 'authentication required' });
+  }
   console.log(`[Debug] Testing entity search for: "${query}"`);
 
   try {
-    const entityResults = await performEntitySearch(query, 10, '');
+    const entityResults = await performEntitySearch(query, 10, buildPrivacyFilter(true));
     res.json({
       query,
       entity_count: entityResults.length,
