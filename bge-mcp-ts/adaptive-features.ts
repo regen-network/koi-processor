@@ -44,7 +44,12 @@ interface QueryLogEntry {
  * Provides better score discrimination than RRF for hybrid search
  *
  * Weights: 0.6 vector + 0.2 entity/graph + 0.2 keyword
- * Entity/graph results get a boost to surface documents with matching entities
+ * Entity/graph results get a boost to surface documents with matching entities.
+ * A document that only the entity leg returned gets the boost only when its
+ * match is strong (metadata.strong_entity_match: a multiword phrase, a
+ * canonical alias, or a name written as one in the query). Otherwise a match
+ * on one common word ("software", "build") scored 0.35 and outranked a real
+ * vector match of 0.545 (0.327 after weighting).
  */
 export function weightedAverageFusion(
   vectorResults: SearchResult[],
@@ -62,6 +67,7 @@ export function weightedAverageFusion(
     entityScore: number;
     keywordScore: number;
     hasEntityMatch: boolean;
+    strongEntityMatch: boolean;
     result: SearchResult;
     entitiesMatched?: string[];
   }>();
@@ -76,6 +82,7 @@ export function weightedAverageFusion(
       entityScore: 0,
       keywordScore: 0,
       hasEntityMatch: false,
+      strongEntityMatch: false,
       result
     });
   });
@@ -87,10 +94,12 @@ export function weightedAverageFusion(
     const mergeKey = normalizeRidForFusion(rawId);
     const existing = merged.get(mergeKey);
     const entityScore = result.similarity || result.score || 0;
+    const strong = result.metadata?.strong_entity_match === true;
 
     if (existing) {
-      existing.entityScore = entityScore;
+      existing.entityScore = Math.max(existing.entityScore, entityScore);
       existing.hasEntityMatch = true;
+      existing.strongEntityMatch = existing.strongEntityMatch || strong;
       existing.entitiesMatched = result.metadata?.entities_matched;
     } else {
       // Document only in entity results
@@ -99,6 +108,7 @@ export function weightedAverageFusion(
         entityScore,
         keywordScore: 0,
         hasEntityMatch: true,
+        strongEntityMatch: strong,
         result,
         entitiesMatched: result.metadata?.entities_matched
       });
@@ -124,6 +134,7 @@ export function weightedAverageFusion(
         entityScore: 0,
         keywordScore,
         hasEntityMatch: false,
+        strongEntityMatch: false,
         result
       });
     }
@@ -152,8 +163,11 @@ export function weightedAverageFusion(
                   (data.entityScore * ENTITY_WEIGHT) +
                   (data.keywordScore * KEYWORD_WEIGHT);
 
-      // Apply entity boost for documents that match query entities
-      if (data.hasEntityMatch) {
+      // Apply entity boost for documents that match query entities. A
+      // document no other leg returned needs a strong match for it.
+      const corroborated = data.vectorScore > 0 || data.keywordScore > 0;
+      const boosted = data.hasEntityMatch && (corroborated || data.strongEntityMatch);
+      if (boosted) {
         score += ENTITY_BOOST;
       }
 
@@ -168,7 +182,8 @@ export function weightedAverageFusion(
           vector_score: data.vectorScore,
           entity_score: data.entityScore,
           keyword_score: data.keywordScore,
-          entity_boost: data.hasEntityMatch ? ENTITY_BOOST : 0,
+          entity_boost: boosted ? ENTITY_BOOST : 0,
+          strong_entity_match: data.strongEntityMatch,
           entities_matched: data.entitiesMatched,
           weighted_score: score
         }
