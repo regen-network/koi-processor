@@ -5,6 +5,7 @@ Provides access to KOI pipeline structure and component metadata
 """
 
 import os
+import re
 import time
 import json
 import hashlib
@@ -546,8 +547,71 @@ async def get_component_detail(component_id: str):
         "outgoing_connections": outgoing
     }
 
+def _missing_provenance(rid: str) -> dict:
+    """Response shape for a RID with no provenance, reused so a private RID is
+    indistinguishable from a missing one."""
+    return {
+        "rid": rid,
+        "found": False,
+        "document": {"source_url": None},
+        "provenance": {
+            "sensed_by": [],
+            "processed_by": [],
+            "stored_in": [],
+            "transformation_count": 0,
+            "first_seen": None,
+            "last_updated": None,
+        },
+        "timeline": [],
+    }
+
+
+async def _provenance_touches_private_doc(conn, rids) -> bool:
+    """For an anonymous caller: True if any of these RIDs, or the document a chunk
+    belongs to, is a private koi_memories row (the column /api/koi/rids filters on,
+    12f77dc). Normalizes content:, #chunkN and :chunk_N forms and resolves
+    koi_memory_chunks.chunk_rid -> document_rid. Derivative RIDs such as
+    embedding:<rid>:<model> are covered because the receipts that carry them are
+    passed in alongside their input_rid, which is the real chunk/document."""
+    exact = set()
+    bases = set()
+    for v in rids:
+        if not v:
+            continue
+        exact.add(v)
+        s = v[len("content:"):] if v.startswith("content:") else v
+        exact.add(s)
+        base = re.sub(r'(:chunk_\d+|#chunk.*)$', '', s)
+        exact.add(base)
+        bases.add(base)
+    if not exact:
+        return False
+    result = await conn.fetchval(
+        """
+        SELECT bool_or(COALESCE(m.is_private, FALSE))
+        FROM koi_memories m
+        WHERE m.rid = ANY($1::text[])
+           OR m.rid IN (
+                SELECT c.document_rid
+                FROM koi_memory_chunks c
+                WHERE c.chunk_rid = ANY($1::text[])
+           )
+           OR EXISTS (
+                SELECT 1 FROM unnest($2::text[]) AS b(base)
+                WHERE m.rid LIKE b.base || '#chunk%'
+           )
+        """,
+        list(exact),
+        list(bases),
+    )
+    return bool(result)
+
+
 @app.get("/api/koi/graph/provenance/{rid:path}")
-async def get_document_provenance(rid: str):
+async def get_document_provenance(
+    rid: str,
+    user_email: Optional[str] = Depends(get_optional_user_email),
+):
     """Get provenance information for a document through the pipeline"""
 
     import asyncpg
@@ -561,15 +625,25 @@ async def get_document_provenance(rid: str):
         conn = await asyncpg.connect(POSTGRES_URL)
 
         try:
-            # Fetch source URL using our reconstruction logic
-            source_url = await fetch_source_url(conn, rid)
-
-            # Strip content: prefix if present for transformation receipt queries
+            # Derive the receipt and base RIDs ONCE here, exactly as the receipts
+            # query below uses them, so the privacy gate can never diverge from
+            # what the handler actually serves (a divergent derivation was a leak).
             # koi_content uses content:orn:... but transformation_receipts use orn:...
             receipt_rid = rid.replace("content:", "") if rid.startswith("content:") else rid
-
-            # Extract base RID (without #chunkN suffix) for chunks
+            # Base RID without the #chunkN suffix (used for chunk receipts).
             base_rid = receipt_rid.split('#')[0] if '#' in receipt_rid else receipt_rid
+
+            # Privacy gate (anonymous), fast path: block a direct private
+            # document/chunk request before fetch_source_url even runs. Privacy
+            # lives on koi_memories.is_private (the column /api/koi/rids filters on,
+            # 12f77dc); authenticated @regen.network callers are exempt.
+            if not user_email and await _provenance_touches_private_doc(
+                conn, [rid, receipt_rid, base_rid]
+            ):
+                return _missing_provenance(rid)
+
+            # Fetch source URL using our reconstruction logic
+            source_url = await fetch_source_url(conn, rid)
 
             # Query transformation receipts for this RID
             # For chunks, include base document transformations but exclude other chunks
@@ -613,6 +687,18 @@ async def get_document_provenance(rid: str):
                 FROM chain
                 ORDER BY created_at ASC
             """, receipt_rid, base_rid)
+
+            # Privacy gate (anonymous), authoritative: the receipts chain can
+            # reach a private document through derivative RIDs (embedding:<rid>:...,
+            # KG-extraction RIDs) whose input_rid traces back to it. Hide the whole
+            # response if any touched RID belongs to a private document.
+            if not user_email:
+                _touched = [rid, receipt_rid, base_rid]
+                for _r in receipts:
+                    _touched.append(_r["input_rid"])
+                    _touched.append(_r["output_rid"])
+                if await _provenance_touches_private_doc(conn, _touched):
+                    return _missing_provenance(rid)
 
             # Build provenance timeline with logical ordering
             timeline = []
@@ -778,7 +864,9 @@ async def get_document_provenance(rid: str):
             await conn.close()
 
     except Exception as e:
-        logger.error(f"Error fetching provenance for {rid}: {e}")
+        # %r quotes the RID so a newline in the path can't forge log lines
+        # (log injection); log the exception type, not its raw message.
+        logger.error("Error fetching provenance for %r: %s", rid, type(e).__name__)
         return {
             "rid": rid,
             "error": str(e),
