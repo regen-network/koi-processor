@@ -870,7 +870,10 @@ async def auth_callback(code: str, state: str, db=Depends(get_db)):
     try:
         claims = await validate_google_id_token(id_token, creds["client_id"])
     except ValueError as e:
-        logger.warning(f"[Auth] JWT validation failed: {e}")
+        # Log the exception type only. The raw message can carry
+        # attacker-controlled content (e.g. a newline in a JWT 'kid'), which
+        # would forge extra log lines (log injection).
+        logger.warning(f"[Auth] JWT validation failed: {type(e).__name__}")
         await db.execute("UPDATE auth_requests SET status = 'rejected' WHERE id = $1", auth_request['id'])
         return HTMLResponse(
             content=f"<h1>Verification Failed</h1><p>{html.escape(str(e))}</p>",
